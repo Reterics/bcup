@@ -1,0 +1,16 @@
+{
+    "name": "entroped/bcup",
+    "description": "Firestore Backup & Restore with PHP",
+    "type": "project",
+    "require": {
+        "phpmailer/phpmailer": "^6.9",
+        "google/cloud-firestore": "^0.1.0"
+    },
+    "license": "MIT",
+    "authors": [
+        {
+            "name": "Attila Reterics",
+            "email": "reterics.attila@gmail.com"
+        }
+    ]
+}
