@@ -4,7 +4,8 @@
     "type": "project",
     "require": {
         "phpmailer/phpmailer": "^6.9",
-        "google/cloud-firestore": "^0.1.0"
+        "google/cloud-firestore": "^0.1.0",
+        "ext-zlib": "*"
     },
     "license": "MIT",
     "authors": [

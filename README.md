@@ -4,7 +4,7 @@
 
 # 🔥 B'Cup
 
-### Firestore Backup & Restore with PHP
+### Firestore Backup & Restore with PHP & React
 
 This project provides a **reliable backup and restore solution for Firestore**, using **PHP Cron Jobs**, **Gzip compression**, and **Email notifications for failures**.
 
@@ -20,9 +20,11 @@ This project provides a **reliable backup and restore solution for Firestore**, 
 ## 🛠 Installation & Setup
 
 ### 1️⃣ Install Dependencies
-First, install the required PHP libraries:
+First, install the required PHP libraries along with NPM Packages:
 
 ```sh
+npm install
+cd api
 composer install
 ```
 
@@ -40,7 +42,7 @@ $firestore = new FirestoreClient([
 ```
 
 #### **Email (SMTP) Settings**
-Update your SMTP credentials in `backup.php`:
+Update your SMTP credentials in `api/index.php`:
 
 ```php
 $notifyEmail = "your-email@example.com"; 
@@ -49,6 +51,49 @@ $smtpUsername = "your-smtp-username";
 $smtpPassword = "your-smtp-password";
 $smtpPort = 587; // Use 465 for SSL, 587 for TLS
 ```
+
+---
+
+## 📌 API Endpoints
+
+### 🔄 **List Backups**
+- **URL:** `GET /php_api_boilerplate.php?action=list`
+- **Response:**
+  ```json
+  {
+    "success": true,
+    "data": [
+      {"file": "parts_2025-02-03_12-00-00.json.gz", "timestamp": 1706961600 }
+    ]
+  }
+  ```
+
+### 🔄 **Create a Backup**
+- **URL:** `GET /php_api_boilerplate.php?action=create`
+- **Response:**
+  ```json
+  {
+    "success": true,
+    "data": [{ "collection": "parts", "file": "parts_2025-02-03_12-00-00.json.gz" }]
+  }
+  ```
+
+### 🗑️ **Delete a Backup**
+- **URL:** `POST /php_api_boilerplate.php?action=delete`
+- **Body:** `{ "file": "parts_2025-02-03_12-00-00.json.gz" }`
+- **Response:**
+  ```json
+  { "success": true, "message": "Backup deleted" }
+  ```
+
+### 🔄 **Restore a Backup**
+- **URL:** `POST /php_api_boilerplate.php?action=restore`
+- **Body:** `{ "file": "parts_2025-02-03_12-00-00.json.gz" }`
+- **Response:**
+  ```json
+  { "success": true, "message": "Backup restored" }
+  ```
+
 
 ### 3️⃣ Set Up Cron Jobs
 Schedule the backup script to run daily at **3 AM**:
