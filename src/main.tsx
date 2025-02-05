@@ -1,10 +1,15 @@
-import { StrictMode } from 'react'
-import { createRoot } from 'react-dom/client'
+import {StrictMode} from 'react'
+import {createRoot} from 'react-dom/client'
 import './index.css'
-import BackupManager from "./BackupManager.tsx";
+import App from './App.tsx'
+import {BrowserRouter, Route, Routes} from 'react-router-dom'
 
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
-    <BackupManager />
-  </StrictMode>,
+    <BrowserRouter>
+      <Routes>
+        <Route path='/' element={<App />} />
+      </Routes>
+    </BrowserRouter>
+  </StrictMode>
 )

@@ -24,3 +24,5 @@ dist-ssr
 *.sw?
 /vendor/
 /api/vendor/
+.env.development
+.env.production
