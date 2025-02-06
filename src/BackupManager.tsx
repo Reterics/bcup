@@ -7,13 +7,13 @@ interface BackupElement {
   collection?: string
 }
 
-const API = import.meta.env.VITE_API || '/api/'
+const API = import.meta.env.VITE_API || '/api/v1/'
 
 const BackupManager = () => {
   const [backups, setBackups] = useState<BackupElement[]>([])
 
   useEffect(() => {
-    fetch(API + '?action=list') // Call PHP API
+    fetch(API + 'backup.php?action=list') // Call PHP API
       .then(res => res.json())
       .then(data =>
         setBackups(
@@ -27,7 +27,7 @@ const BackupManager = () => {
   }, [])
 
   const deleteBackup = async (file: string) => {
-    await fetch(API + '?action=delete', {
+    await fetch(API + 'backup.php?action=delete', {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
       body: JSON.stringify({file}),
