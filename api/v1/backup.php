@@ -2,13 +2,12 @@
 require '../security.php';
 require '../vendor/autoload.php';
 
-use Google\Cloud\Firestore\FirestoreClient;
+use Kreait\Firebase\Factory;
+
 use PHPMailer\PHPMailer\PHPMailer;
 use PHPMailer\PHPMailer\Exception;
 
-$firestore = new FirestoreClient([
-    'projectId' => 'your-project-id'
-]);
+global $firestore;
 
 $backupDir = __DIR__ . "/backups/";
 $action = $_GET['action'] ?? null;
@@ -19,21 +18,32 @@ switch ($action) {
         listBackups($backupDir);
         break;
     case 'create':
-        createBackup($backupDir, $firestore);
+        initFirestore();
+        createBackup($backupDir);
         break;
     case 'delete':
         $file = $_POST['file'] ?? null;
         deleteBackup($backupDir, $file);
         break;
     case 'restore':
+        initFirestore();
         $file = $_POST['file'] ?? null;
-        restoreBackup($backupDir, $file, $firestore);
+        restoreBackup($backupDir, $file);
         break;
     default:
         echo json_encode(["error" => "Invalid action"]);
 }
 
-function listBackups($backupDir) {
+function initFirestore(): void
+{
+  global $firestore;
+  // Initialize Firebase with the JSON key file
+  $factory = (new Factory)->withServiceAccount($_ENV['FIRESTORE_SERVICE_ACCOUNT']);
+  $firestore = $factory->createFirestore()->database();
+}
+
+function listBackups($backupDir): void
+{
     $files = glob($backupDir . "*.json.gz");
     $backups = array_map(fn($file) => [
         "file" => basename($file),
@@ -43,45 +53,56 @@ function listBackups($backupDir) {
     echo json_encode(["success" => true, "data" => $backups]);
 }
 
-function createBackup($backupDir, $firestore) {
-    global $email;
-    $collections = ['parts', 'orders', 'users'];
-    $response = [];
-    $errors = [];
-    $success = true;
+
+
+function createBackup($backupDir): void
+{
+  global $email, $firestore;
+  $collections = ['parts', 'orders', 'users'];
+  $response = [];
+  $errors = [];
+  $success = true;
+
+  try {
+
 
     foreach ($collections as $collection) {
-        try {
-            $documents = $firestore->collection($collection)->documents();
-            $data = [];
+      try {
+        $documents = $firestore->collection($collection)->documents();
+        $data = [];
 
-            foreach ($documents as $document) {
-                $data[] = $document->data();
-            }
-
-            $jsonData = json_encode($data, JSON_PRETTY_PRINT);
-            $backupFile = $backupDir . $collection . "_" . date('Y-m-d_H-i-s') . ".json.gz";
-
-            $gzFile = gzopen($backupFile, 'w9');
-            gzwrite($gzFile, $jsonData);
-            gzclose($gzFile);
-
-            $response[] = ["collection" => $collection, "file" => basename($backupFile)];
-        } catch (Exception $e) {
-            $errorMsg = "❌ ERROR: Failed to backup $collection - " . $e->getMessage() . "\n";
-            $response[] = ["collection" => $collection, "error" => $errorMsg];
-            $errors[] = $errorMsg;
-            $success = false;
+        foreach ($documents as $document) {
+          $data[] = $document->data();
         }
-    }
 
-    if ($success === false && $email) {
-        sendFailureEmail(implode("\n", $errors));
+        $jsonData = json_encode($data, JSON_PRETTY_PRINT);
+        $backupFile = $backupDir . $collection . "_" . date('Y-m-d_H-i-s') . ".json.gz";
+
+        $gzFile = gzopen($backupFile, 'w9');
+        gzwrite($gzFile, $jsonData);
+        gzclose($gzFile);
+
+        $response[] = ["collection" => $collection, "file" => basename($backupFile)];
+      } catch (Exception $e) {
+        $errorMsg = "❌ ERROR: Failed to backup $collection - " . $e->getMessage() . "\n";
+        $response[] = ["collection" => $collection, "error" => $errorMsg];
+        $errors[] = $errorMsg;
+        $success = false;
+      }
     }
-    echo json_encode(["success" => $success, "data" => $response]);
+  } catch (Exception $e) {
+    $errors[] = "❌ ERROR: Firebase initialization failed - " . $e->getMessage();
+    $success = false;
+  }
+
+  if ($success === false && $email) {
+    sendFailureEmail(implode("\n", $errors));
+  }
+  echo json_encode(["success" => $success, "data" => $response]);
 }
 
-function deleteBackup($backupDir, $file) {
+function deleteBackup($backupDir, $file): void
+{
     if ($file && file_exists($backupDir . $file)) {
         unlink($backupDir . $file);
         echo json_encode(["success" => true, "message" => "Backup deleted"]);
@@ -91,7 +112,9 @@ function deleteBackup($backupDir, $file) {
 }
 
 
-function restoreBackup($backupDir, $file, $firestore) {
+function restoreBackup($backupDir, $file): void
+{
+    global $firestore;
     if (!$file || !file_exists($backupDir . $file)) {
         onError("Backup file not found");
         return;
@@ -121,7 +144,8 @@ function restoreBackup($backupDir, $file, $firestore) {
 }
 
 
-function sendFailureEmail($errorMessage) {
+function sendFailureEmail($errorMessage): void
+{
     $mail = new PHPMailer(true);
 
     try {
@@ -144,7 +168,7 @@ function sendFailureEmail($errorMessage) {
     }
 }
 
-function onError($errorMessage)
+function onError($errorMessage): void
 {
     global $email;
     echo json_encode(["error" => $errorMessage]);

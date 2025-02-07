@@ -26,3 +26,4 @@ dist-ssr
 /api/vendor/
 .env.development
 .env.production
+/api/env.php
