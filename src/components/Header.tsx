@@ -1,61 +1,58 @@
-import {useLocation} from 'react-router-dom'
+import {useState} from 'react'
 import logo from '../../img/logo.png'
 
 const Header = () => {
-  const pathname = useLocation().pathname
+  const [menuOpen, setMenuOpen] = useState(false)
 
   return (
-    <header>
-      <nav className='w-full bg-white border-gray-200 dark:bg-gray-900'>
-        <div className='max-w-screen-xl flex flex-wrap items-center justify-between mx-auto p-4'>
-          <span className='flex items-center'>
-            <img src={logo} width={30} height={32} className='h-8' alt='Logo' />
-            <div className='self-center text-2xl font-semibold whitespace-nowrap dark:text-white flex-row flex'>
-              T<div className='text-sm pt-1 text'>BCup</div>
-            </div>
-          </span>
+    <header className='bg-white border-b border-gray-200'>
+      <nav className='max-w-6xl mx-auto px-4 sm:px-6 lg:px-8'>
+        <div className='flex items-center justify-between h-14'>
+          <a href='/' className='flex items-center gap-1.5'>
+            <img src={logo} width={28} height={28} className='h-7 w-7' alt='BCup Logo' />
+            <span className='text-lg font-semibold text-gray-900'>
+              B<span className='text-sm text-gray-500'>Cup</span>
+            </span>
+          </a>
+
           <button
-            data-collapse-toggle='navbar-default'
+            onClick={() => setMenuOpen(!menuOpen)}
             type='button'
-            className='inline-flex items-center p-2 w-10 h-10 justify-center text-sm text-gray-500 rounded-lg md:hidden hover:bg-gray-100 focus:outline-none focus:ring-2 focus:ring-gray-200 dark:text-gray-400 dark:hover:bg-gray-700 dark:focus:ring-gray-600'
-            aria-controls='navbar-default'
-            aria-expanded='false'
+            className='inline-flex items-center p-2 rounded-md text-gray-500 hover:text-gray-700 hover:bg-gray-100 md:hidden transition-colors'
+            aria-expanded={menuOpen}
           >
-            <span className='sr-only'>Open main menu</span>
-            <svg
-              className='w-5 h-5'
-              aria-hidden='true'
-              xmlns='http://www.w3.org/2000/svg'
-              fill='none'
-              viewBox='0 0 17 14'
-            >
-              <path
-                stroke='currentColor'
-                strokeLinecap='round'
-                strokeLinejoin='round'
-                strokeWidth='2'
-                d='M1 1h15M1 7h15M1 13h15'
-              />
-            </svg>
+            <span className='sr-only'>Toggle menu</span>
+            {menuOpen ? (
+              <svg className='w-5 h-5' fill='none' stroke='currentColor' viewBox='0 0 24 24'>
+                <path strokeLinecap='round' strokeLinejoin='round' strokeWidth={2} d='M6 18L18 6M6 6l12 12' />
+              </svg>
+            ) : (
+              <svg className='w-5 h-5' fill='none' stroke='currentColor' viewBox='0 0 24 24'>
+                <path strokeLinecap='round' strokeLinejoin='round' strokeWidth={2} d='M4 6h16M4 12h16M4 18h16' />
+              </svg>
+            )}
           </button>
-          <div className='hidden w-full md:block md:w-auto' id='navbar-default'>
-            <ul className='font-medium flex flex-col p-4 md:p-0 mt-4 border border-gray-100 rounded-lg bg-gray-50 md:flex-row md:space-x-8 md:mt-0 md:border-0 md:bg-white dark:bg-gray-800 md:dark:bg-gray-900 dark:border-gray-700'>
-              <li>
-                <a
-                  href='/'
-                  className={
-                    pathname === '/'
-                      ? 'block py-2 pl-3 pr-4 text-white bg-gray-900 rounded md:bg-transparent md:text-gray-700 md:p-0 dark:text-white md:dark:text-gray-500'
-                      : 'block py-2 pl-3 pr-4 text-gray-900 rounded hover:bg-gray-500 md:hover:bg-transparent md:border-0 md:hover:text-gray-900 md:p-0 dark:text-white md:dark:hover:text-gray-900 dark:hover:bg-gray-900 dark:hover:text-white md:dark:hover:bg-transparent'
-                  }
-                  aria-current='page'
-                >
-                  Home
-                </a>
-              </li>
-            </ul>
+
+          <div className='hidden md:flex items-center gap-6'>
+            <a
+              href='/'
+              className='text-sm font-medium text-gray-700 hover:text-gray-900 transition-colors'
+            >
+              Dashboard
+            </a>
           </div>
         </div>
+
+        {menuOpen && (
+          <div className='md:hidden border-t border-gray-100 py-2'>
+            <a
+              href='/'
+              className='block px-3 py-2 text-sm font-medium text-gray-700 hover:bg-gray-50 rounded-md'
+            >
+              Dashboard
+            </a>
+          </div>
+        )}
       </nav>
     </header>
   )

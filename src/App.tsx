@@ -3,11 +3,11 @@ import BackupManager from './BackupManager.tsx'
 
 const App = () => {
   return (
-    <div>
+    <div className='min-h-screen bg-gray-50'>
       <Header />
-      <div className='container'>
+      <main>
         <BackupManager />
-      </div>
+      </main>
     </div>
   )
 }
