@@ -16,10 +16,9 @@ switch ($action) {
         listBackups($backupDir);
         break;
     case 'create':
-        $collection = $body['collection'] ?? null;
-        $documents = $body['documents'] ?? null;
+        $collections = $body['collections'] ?? null;
         $project = $body['project'] ?? null;
-        createBackup($backupDir, $collection, $documents, $project);
+        createBackup($backupDir, $collections, $project);
         break;
     case 'delete':
         $file = $body['file'] ?? null;
@@ -50,9 +49,10 @@ function listBackups($backupDir): void
 function enrichBackupMetadata(string $filePath): array
 {
     $fileName = basename($filePath);
-    $collectionName = explode('_', $fileName)[0];
 
     $documentCount = null;
+    $collectionNames = [];
+
     try {
         $gz = gzopen($filePath, 'r');
         if ($gz !== false) {
@@ -69,11 +69,25 @@ function enrichBackupMetadata(string $filePath): array
             }
             gzclose($gz);
             $decoded = json_decode($jsonData, true);
-            if (is_array($decoded) && isset($decoded['documents']) && is_array($decoded['documents'])) {
-                $documentCount = count($decoded['documents']);
-            } elseif (is_array($decoded) && !isset($decoded['documents'])) {
-                // Legacy format: top-level array of documents
-                $documentCount = count($decoded);
+            if (is_array($decoded)) {
+                if (isset($decoded['collections']) && is_array($decoded['collections'])) {
+                    // New unified format
+                    $collectionNames = array_keys($decoded['collections']);
+                    $documentCount = 0;
+                    foreach ($decoded['collections'] as $docs) {
+                        if (is_array($docs)) {
+                            $documentCount += count($docs);
+                        }
+                    }
+                } elseif (isset($decoded['documents']) && is_array($decoded['documents'])) {
+                    // Old single-collection format
+                    $collectionNames = [$decoded['collection'] ?? explode('_', $fileName)[0]];
+                    $documentCount = count($decoded['documents']);
+                } elseif (!isset($decoded['documents']) && !isset($decoded['collections'])) {
+                    // Legacy format: top-level array of documents
+                    $collectionNames = [explode('_', $fileName)[0]];
+                    $documentCount = count($decoded);
+                }
             }
         }
     } catch (\Throwable $e) {
@@ -83,23 +97,22 @@ function enrichBackupMetadata(string $filePath): array
     return [
         "file" => $fileName,
         "timestamp" => filemtime($filePath),
-        "collection" => $collectionName,
+        "collections" => $collectionNames,
         "documents" => $documentCount,
         "size" => filesize($filePath),
     ];
 }
 
-function createBackup($backupDir, $collection, $documents, $project): void
+function createBackup($backupDir, $collections, $project): void
 {
-    if (!$collection || !is_array($documents)) {
-        onError("Missing collection name or documents data");
+    if (!is_array($collections) || empty($collections)) {
+        onError("Missing collections data");
         return;
     }
 
     try {
         $backupData = [
-            'collection' => $collection,
-            'documents' => $documents,
+            'collections' => $collections,
             'createdAt' => date('c'),
         ];
 
@@ -108,7 +121,7 @@ function createBackup($backupDir, $collection, $documents, $project): void
         }
 
         $jsonData = json_encode($backupData, JSON_PRETTY_PRINT);
-        $backupFile = $backupDir . $collection . "_" . date('Y-m-d_H-i-s') . ".json.gz";
+        $backupFile = $backupDir . "backup_" . date('Y-m-d_H-i-s') . ".json.gz";
 
         $gzFile = gzopen($backupFile, 'w9');
         gzwrite($gzFile, $jsonData);
@@ -116,7 +129,10 @@ function createBackup($backupDir, $collection, $documents, $project): void
 
         echo json_encode([
             "success" => true,
-            "data" => ["collection" => $collection, "file" => basename($backupFile)],
+            "data" => [
+                "collections" => array_keys($collections),
+                "file" => basename($backupFile),
+            ],
         ]);
     } catch (\Exception $e) {
         onError("Failed to create backup: " . $e->getMessage());
@@ -125,6 +141,7 @@ function createBackup($backupDir, $collection, $documents, $project): void
 
 function deleteBackup($backupDir, $file): void
 {
+    $file = $file ? basename($file) : null;
     if ($file && file_exists($backupDir . $file)) {
         unlink($backupDir . $file);
         echo json_encode(["success" => true, "message" => "Backup deleted"]);
@@ -157,6 +174,7 @@ function downloadBackup($backupDir, $file): void
 
 function restoreBackup($backupDir, $file): void
 {
+    $file = $file ? basename($file) : null;
     if (!$file || !file_exists($backupDir . $file)) {
         onError("Backup file not found");
         return;
@@ -175,12 +193,22 @@ function restoreBackup($backupDir, $file): void
         return;
     }
 
-    // New format: { collection, documents, project, createdAt }
-    if (isset($data['documents']) && is_array($data['documents'])) {
+    // New unified format: { collections: { col1: [...], col2: [...] }, ... }
+    if (isset($data['collections']) && is_array($data['collections'])) {
         echo json_encode([
             "success" => true,
-            "collection" => $data['collection'] ?? explode('_', $file)[0],
-            "documents" => $data['documents'],
+            "collections" => $data['collections'],
+            "project" => $data['project'] ?? null,
+        ]);
+        return;
+    }
+
+    // Old single-collection format: { collection, documents, ... }
+    if (isset($data['documents']) && is_array($data['documents'])) {
+        $collectionName = $data['collection'] ?? explode('_', $file)[0];
+        echo json_encode([
+            "success" => true,
+            "collections" => [$collectionName => $data['documents']],
             "project" => $data['project'] ?? null,
         ]);
         return;
@@ -190,8 +218,7 @@ function restoreBackup($backupDir, $file): void
     $collectionName = explode('_', $file)[0];
     echo json_encode([
         "success" => true,
-        "collection" => $collectionName,
-        "documents" => $data,
+        "collections" => [$collectionName => $data],
     ]);
 }
 

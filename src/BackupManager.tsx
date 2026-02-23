@@ -5,7 +5,7 @@ import { getActiveProject } from './lib/projects'
 interface BackupElement {
   file: string
   timestamp: number
-  collection: string
+  collections: string[]
   documents?: number
   size?: number
 }
@@ -19,7 +19,6 @@ interface Toast {
 interface ConfirmAction {
   type: 'delete' | 'restore'
   file: string
-  collection: string
 }
 
 const API = import.meta.env.VITE_API || '/api/v1/'
@@ -142,9 +141,9 @@ const BackupManager = () => {
   const [showCreateModal, setShowCreateModal] = useState(false)
   const [selectedCollections, setSelectedCollections] = useState<Set<string>>(new Set())
   const [backupProgress, setBackupProgress] = useState<{
+    step: 'fetching' | 'uploading' | 'done'
     current: number
     total: number
-    collection: string
   } | null>(null)
   const tid = useRef(0)
 
@@ -162,10 +161,18 @@ const BackupManager = () => {
       if (data.success) {
         setBackups(
           data.data
-            .map((d: BackupElement) => ({
-              ...d,
-              collection: d.collection || d.file.split('_')[0],
-            }))
+            .map((d: Record<string, unknown>) => {
+              const legacy = d as unknown as { collection?: string }
+              let collections: string[]
+              if (Array.isArray(d.collections) && d.collections.length > 0) {
+                collections = d.collections
+              } else if (legacy.collection) {
+                collections = [legacy.collection]
+              } else {
+                collections = [(d.file as string).split('_')[0]]
+              }
+              return { ...d, collections } as BackupElement
+            })
             .sort((a: BackupElement, b: BackupElement) => b.timestamp - a.timestamp)
         )
       } else {
@@ -200,56 +207,50 @@ const BackupManager = () => {
     if (cols.length === 0) return
 
     setCreating(true)
-    setBackupProgress({ current: 0, total: cols.length, collection: cols[0] })
-
-    let successCount = 0
-    let lastError = ''
+    setBackupProgress({ step: 'fetching', current: 0, total: cols.length })
 
     try {
+      // Fetch all selected collections' documents
+      const collectionsData: Record<string, Array<Record<string, unknown>>> = {}
       for (let i = 0; i < cols.length; i++) {
-        setBackupProgress({ current: i, total: cols.length, collection: cols[i] })
+        setBackupProgress({ step: 'fetching', current: i, total: cols.length })
         try {
-          // Fetch documents from Firestore client-side
-          const docs = await getDocuments(cols[i])
-
-          // Build backup payload with project metadata
-          const backupData = {
-            collection: cols[i],
-            project: {
-              name: project.name,
-              firebaseConfig: project.firebaseConfig,
-            },
-            documents: docs,
-          }
-
-          // Send to PHP for file storage
-          const res = await fetch(API + 'backup.php?action=create', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(backupData),
-          })
-          const data = await res.json()
-          if (data.success) {
-            successCount++
-          } else {
-            lastError = data.error || `Failed to store backup for ${cols[i]}`
-          }
+          collectionsData[cols[i]] = await getDocuments(cols[i])
         } catch (err) {
-          lastError =
-            err instanceof Error ? err.message : `Failed to backup ${cols[i]}`
+          toast('error', `Failed to fetch ${cols[i]}: ${err instanceof Error ? err.message : 'Unknown error'}`)
+          return
         }
       }
 
-      setBackupProgress({ current: cols.length, total: cols.length, collection: '' })
+      // Upload single backup
+      setBackupProgress({ step: 'uploading', current: cols.length, total: cols.length })
 
-      if (successCount === cols.length) {
-        toast('success', `Created ${successCount} backup(s)`)
-      } else if (successCount > 0) {
-        toast('error', `${successCount}/${cols.length} backups created. Last error: ${lastError}`)
+      const backupData = {
+        collections: collectionsData,
+        project: {
+          name: project.name,
+          firebaseConfig: project.firebaseConfig,
+        },
+      }
+
+      const res = await fetch(API + 'backup.php?action=create', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(backupData),
+      })
+      const data = await res.json()
+
+      setBackupProgress({ step: 'done', current: cols.length, total: cols.length })
+
+      if (data.success) {
+        const totalDocs = Object.values(collectionsData).reduce((sum, docs) => sum + docs.length, 0)
+        toast('success', `Backup created: ${cols.length} collection(s), ${totalDocs} document(s)`)
       } else {
-        toast('error', lastError || 'Backup creation failed')
+        toast('error', data.error || 'Backup creation failed')
       }
       fetchBackups()
+    } catch (err) {
+      toast('error', err instanceof Error ? err.message : 'Backup creation failed')
     } finally {
       setCreating(false)
       setBackupProgress(null)
@@ -283,7 +284,6 @@ const BackupManager = () => {
   const restoreBackup = async (file: string) => {
     setActionFile(file)
     try {
-      // Download backup data from PHP
       const res = await fetch(API + 'backup.php?action=restore', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -295,25 +295,28 @@ const BackupManager = () => {
         return
       }
 
-      const collectionName = data.collection
-      const documents: Array<Record<string, unknown>> = data.documents
+      const collections: Record<string, Array<Record<string, unknown>>> = data.collections
+      let totalDocs = 0
+      let totalErrors = 0
 
-      // Write documents to Firestore client-side
-      let errors = 0
-      for (const doc of documents) {
-        const docId = doc.id as string
-        if (!docId) continue
-        try {
-          await setDocument(collectionName, docId, doc)
-        } catch {
-          errors++
+      for (const [collectionName, documents] of Object.entries(collections)) {
+        for (const doc of documents) {
+          const docId = doc.id as string
+          if (!docId) continue
+          totalDocs++
+          try {
+            await setDocument(collectionName, docId, doc)
+          } catch {
+            totalErrors++
+          }
         }
       }
 
-      if (errors === 0) {
-        toast('success', `Restored ${documents.length} documents to ${collectionName}`)
+      const colNames = Object.keys(collections).join(', ')
+      if (totalErrors === 0) {
+        toast('success', `Restored ${totalDocs} documents across ${colNames}`)
       } else {
-        toast('error', `Restored with ${errors} error(s) out of ${documents.length} documents`)
+        toast('error', `Restored with ${totalErrors} error(s) out of ${totalDocs} documents`)
       }
     } catch (err) {
       toast('error', err instanceof Error ? err.message : 'Restore failed')
@@ -331,34 +334,33 @@ const BackupManager = () => {
 
   const filtered = backups.filter(
     b =>
-      b.collection.toLowerCase().includes(filter.toLowerCase()) ||
+      b.collections.some(c => c.toLowerCase().includes(filter.toLowerCase())) ||
       b.file.toLowerCase().includes(filter.toLowerCase())
   )
-  const collections = [...new Set(backups.map(b => b.collection))]
+  const allCollections = [...new Set(backups.flatMap(b => b.collections))]
   const latest = backups[0]
   const totalDocuments = backups.reduce(
     (sum, b) => sum + (typeof b.documents === 'number' ? b.documents : 0),
     0
   )
-  const collectionBreakdown = Object.entries(
-    backups.reduce<Record<string, { backups: number; documents: number; latest: number }>>(
-      (acc, backup) => {
-        const next = acc[backup.collection] || { backups: 0, documents: 0, latest: 0 }
-        next.backups += 1
-        if (typeof backup.documents === 'number') {
-          next.documents += backup.documents
-        }
-        next.latest = Math.max(next.latest, backup.timestamp || 0)
-        acc[backup.collection] = next
-        return acc
-      },
-      {}
-    )
-  )
-    .map(([collection, data]) => ({ collection, ...data }))
-    .sort((a, b) => b.backups - a.backups || b.latest - a.latest)
 
   const project = getActiveProject()
+
+  const progressLabel = backupProgress
+    ? backupProgress.step === 'fetching'
+      ? `Fetching collections... (${backupProgress.current}/${backupProgress.total})`
+      : backupProgress.step === 'uploading'
+        ? 'Uploading backup...'
+        : 'Complete!'
+    : ''
+
+  const progressPercent = backupProgress
+    ? backupProgress.step === 'fetching'
+      ? (backupProgress.current / backupProgress.total) * 80
+      : backupProgress.step === 'uploading'
+        ? 90
+        : 100
+    : 0
 
   return (
     <div className='max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 py-6'>
@@ -411,10 +413,9 @@ const BackupManager = () => {
                   </>
                 ) : (
                   <>
-                    This will restore the{' '}
-                    <span className='font-medium text-gray-900'>{confirm.collection}</span> collection from{' '}
+                    This will restore all collections from{' '}
                     <span className='font-medium text-gray-900'>{confirm.file}</span>. Current data in the
-                    collection will be overwritten.
+                    collections will be overwritten.
                   </>
                 )}
               </p>
@@ -509,18 +510,13 @@ const BackupManager = () => {
                 <div className='mb-6'>
                   <div className='flex items-center justify-between mb-1.5'>
                     <span className='text-xs font-medium text-gray-600'>
-                      {backupProgress.current < backupProgress.total
-                        ? `Backing up ${backupProgress.collection}...`
-                        : 'Complete!'}
-                    </span>
-                    <span className='text-xs font-medium text-gray-500'>
-                      {backupProgress.current}/{backupProgress.total}
+                      {progressLabel}
                     </span>
                   </div>
                   <div className='w-full bg-gray-200 rounded h-2 overflow-hidden'>
                     <div
                       className='bg-blue-600 h-2 rounded transition-all duration-300 ease-out'
-                      style={{ width: `${(backupProgress.current / backupProgress.total) * 100}%` }}
+                      style={{ width: `${progressPercent}%` }}
                     />
                   </div>
                 </div>
@@ -557,50 +553,10 @@ const BackupManager = () => {
       {/* Stats Cards */}
       <div className='grid grid-cols-1 sm:grid-cols-4 gap-3 mb-6'>
         <StatCard label='Total Backups' value={loading ? '...' : backups.length} />
-        <StatCard label='Collections' value={loading ? '...' : collections.length} />
+        <StatCard label='Collections' value={loading ? '...' : allCollections.length} />
         <StatCard label='Documents' value={loading ? '...' : totalDocuments.toLocaleString()} />
         <StatCard label='Latest Backup' value={loading ? '...' : latest ? timeAgo(latest.timestamp) : 'None'} />
       </div>
-
-      {!loading && collectionBreakdown.length > 0 && (
-        <div className='bg-white border border-gray-200 rounded shadow-sm mb-6'>
-          <div className='flex items-center justify-between px-4 py-3 border-b border-gray-200'>
-            <div>
-              <p className='text-sm font-semibold text-gray-900'>Collections Overview</p>
-              <p className='text-xs text-gray-500'>Backup counts and document totals per collection</p>
-            </div>
-            <span className='text-xs text-gray-400'>
-              {latest ? `Latest run ${timeAgo(latest.timestamp)}` : 'No backups yet'}
-            </span>
-          </div>
-          <div className='p-4 grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3'>
-            {collectionBreakdown.map(summary => {
-              const colors = COLLECTION_COLORS[summary.collection] || 'bg-gray-100 text-gray-800'
-              const hasDocs = summary.documents !== undefined && summary.documents !== null
-              return (
-                <div key={summary.collection} className='flex items-start gap-3 p-3 border border-gray-100 rounded'>
-                  <span className={`inline-flex px-2.5 py-1 rounded-full text-xs font-semibold ${colors}`}>
-                    {summary.collection}
-                  </span>
-                  <div className='space-y-1'>
-                    <p className='text-sm font-medium text-gray-900'>
-                      {summary.backups} backup{summary.backups !== 1 ? 's' : ''}
-                    </p>
-                    <p className='text-xs text-gray-500'>
-                      {hasDocs
-                        ? `${summary.documents?.toLocaleString() || 0} document${summary.documents !== 1 ? 's' : ''}`
-                        : 'Document count unavailable'}
-                    </p>
-                    {summary.latest ? (
-                      <p className='text-xs text-gray-400'>Latest: {formatDate(summary.latest)}</p>
-                    ) : null}
-                  </div>
-                </div>
-              )
-            })}
-          </div>
-        </div>
-      )}
 
       {/* Action Bar */}
       <div className='flex flex-col sm:flex-row gap-3 mb-6'>
@@ -699,7 +655,7 @@ const BackupManager = () => {
               <thead>
                 <tr className='border-b border-gray-200 bg-gray-50/80'>
                   <th className='text-left text-xs font-medium text-gray-500 uppercase tracking-wider px-6 py-3'>
-                    Collection
+                    Collections
                   </th>
                   <th className='text-left text-xs font-medium text-gray-500 uppercase tracking-wider px-6 py-3'>
                     Backup File
@@ -720,7 +676,6 @@ const BackupManager = () => {
               </thead>
               <tbody className='divide-y divide-gray-100'>
                 {filtered.map(backup => {
-                  const colors = COLLECTION_COLORS[backup.collection] || 'bg-gray-100 text-gray-800'
                   const isActing = actionFile === backup.file
                   return (
                     <tr
@@ -728,11 +683,19 @@ const BackupManager = () => {
                       className={`hover:bg-gray-50/50 transition-colors ${isActing ? 'opacity-50 pointer-events-none' : ''}`}
                     >
                       <td className='px-6 py-4'>
-                        <span
-                          className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${colors}`}
-                        >
-                          {backup.collection}
-                        </span>
+                        <div className='flex flex-wrap gap-1'>
+                          {backup.collections.map(col => {
+                            const colors = COLLECTION_COLORS[col] || 'bg-gray-100 text-gray-800'
+                            return (
+                              <span
+                                key={col}
+                                className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${colors}`}
+                              >
+                                {col}
+                              </span>
+                            )
+                          })}
+                        </div>
                       </td>
                       <td className='px-6 py-4'>
                         <span className='text-sm text-gray-700 font-mono'>{backup.file}</span>
@@ -764,7 +727,7 @@ const BackupManager = () => {
                         <div className='flex items-center justify-end gap-1.5'>
                           <button
                             onClick={() =>
-                              setConfirm({ type: 'restore', file: backup.file, collection: backup.collection })
+                              setConfirm({ type: 'restore', file: backup.file })
                             }
                             disabled={isActing}
                             className='inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-blue-700 bg-blue-50 border border-blue-200 rounded-md hover:bg-blue-100 transition-colors disabled:opacity-50'
@@ -800,7 +763,7 @@ const BackupManager = () => {
                           </a>
                           <button
                             onClick={() =>
-                              setConfirm({ type: 'delete', file: backup.file, collection: backup.collection })
+                              setConfirm({ type: 'delete', file: backup.file })
                             }
                             disabled={isActing}
                             className='inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-red-700 bg-red-50 border border-red-200 rounded-md hover:bg-red-100 transition-colors disabled:opacity-50'

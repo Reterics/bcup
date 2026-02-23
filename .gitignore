@@ -28,3 +28,4 @@ dist-ssr
 .env.production
 /api/env.php
 /api/*-firebase-adminsdk-*.json
+.backups-tmp
