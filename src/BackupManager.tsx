@@ -1,4 +1,6 @@
-import {useState, useEffect, useCallback, useRef} from 'react'
+import { useState, useEffect, useCallback, useRef } from 'react'
+import { getDocuments, setDocument } from './lib/firebase'
+import { getActiveProject } from './lib/projects'
 
 interface BackupElement {
   file: string
@@ -55,7 +57,7 @@ function formatBytes(bytes?: number | null): string {
   return `${value >= 10 ? value.toFixed(0) : value.toFixed(1)} ${sizes[i]}`
 }
 
-function Spinner({className = 'w-4 h-4'}: {className?: string}) {
+function Spinner({ className = 'w-4 h-4' }: { className?: string }) {
   return (
     <svg className={`animate-spin ${className}`} fill='none' viewBox='0 0 24 24'>
       <circle className='opacity-25' cx='12' cy='12' r='10' stroke='currentColor' strokeWidth='4' />
@@ -68,7 +70,7 @@ function Spinner({className = 'w-4 h-4'}: {className?: string}) {
   )
 }
 
-function StatCard({label, value}: {label: string; value: string | number}) {
+function StatCard({ label, value }: { label: string; value: string | number }) {
   return (
     <div className='bg-white border border-gray-200 rounded p-3'>
       <p className='text-lg font-semibold text-gray-900'>{value}</p>
@@ -96,7 +98,7 @@ function LoadingSkeleton() {
   )
 }
 
-function EmptyState({hasFilter, onClearFilter}: {hasFilter: boolean; onClearFilter: () => void}) {
+function EmptyState({ hasFilter, onClearFilter }: { hasFilter: boolean; onClearFilter: () => void }) {
   return (
     <div className='py-16 px-6 text-center'>
       <svg className='w-12 h-12 mx-auto text-gray-300' fill='none' stroke='currentColor' viewBox='0 0 24 24'>
@@ -138,37 +140,18 @@ const BackupManager = () => {
   const [filter, setFilter] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [showCreateModal, setShowCreateModal] = useState(false)
-  const [availableCollections, setAvailableCollections] = useState<string[]>([])
-  const [collectionsLoading, setCollectionsLoading] = useState(false)
-  const [collectionsError, setCollectionsError] = useState(false)
-  const [manualCollections, setManualCollections] = useState('')
   const [selectedCollections, setSelectedCollections] = useState<Set<string>>(new Set())
-  const [backupProgress, setBackupProgress] = useState<{ current: number; total: number; collection: string } | null>(null)
+  const [backupProgress, setBackupProgress] = useState<{
+    current: number
+    total: number
+    collection: string
+  } | null>(null)
   const tid = useRef(0)
 
   const toast = useCallback((type: Toast['type'], message: string) => {
     const id = ++tid.current
-    setToasts(p => [...p, {id, type, message}])
+    setToasts(p => [...p, { id, type, message }])
     setTimeout(() => setToasts(p => p.filter(t => t.id !== id)), 4000)
-  }, [])
-
-  const fetchCollections = useCallback(async () => {
-    setCollectionsLoading(true)
-    setCollectionsError(false)
-    try {
-      const res = await fetch(API + 'backup.php?action=collections')
-      const data = await res.json()
-      if (data.success) {
-        setAvailableCollections(data.data)
-        setSelectedCollections(new Set(data.data))
-      } else {
-        setCollectionsError(true)
-      }
-    } catch {
-      setCollectionsError(true)
-    } finally {
-      setCollectionsLoading(false)
-    }
   }, [])
 
   const fetchBackups = useCallback(async () => {
@@ -199,42 +182,66 @@ const BackupManager = () => {
     fetchBackups()
   }, [fetchBackups])
 
-  const openCreateModal = async () => {
-    setManualCollections('')
+  const openCreateModal = () => {
+    const project = getActiveProject()
+    if (!project) {
+      toast('error', 'No active project. Configure one in Project Settings.')
+      return
+    }
+    setSelectedCollections(new Set(project.collections))
     setShowCreateModal(true)
-    await fetchCollections()
   }
 
   const createBackup = async () => {
-    const cols = collectionsError
-      ? manualCollections.split(',').map(s => s.trim()).filter(Boolean)
-      : Array.from(selectedCollections)
+    const project = getActiveProject()
+    if (!project) return
+
+    const cols = Array.from(selectedCollections)
     if (cols.length === 0) return
+
     setCreating(true)
     setBackupProgress({ current: 0, total: cols.length, collection: cols[0] })
+
     let successCount = 0
     let lastError = ''
+
     try {
       for (let i = 0; i < cols.length; i++) {
         setBackupProgress({ current: i, total: cols.length, collection: cols[i] })
         try {
+          // Fetch documents from Firestore client-side
+          const docs = await getDocuments(cols[i])
+
+          // Build backup payload with project metadata
+          const backupData = {
+            collection: cols[i],
+            project: {
+              name: project.name,
+              firebaseConfig: project.firebaseConfig,
+            },
+            documents: docs,
+          }
+
+          // Send to PHP for file storage
           const res = await fetch(API + 'backup.php?action=create', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ collection: cols[i] }),
+            body: JSON.stringify(backupData),
           })
           const data = await res.json()
           if (data.success) {
             successCount++
           } else {
-            const errors = data.data?.filter((d: { error?: string }) => d.error) || []
-            lastError = errors.length > 0 ? errors[0].error : `Failed to backup ${cols[i]}`
+            lastError = data.error || `Failed to store backup for ${cols[i]}`
           }
-        } catch {
-          lastError = `Connection failed while backing up ${cols[i]}`
+        } catch (err) {
+          lastError =
+            err instanceof Error ? err.message : `Failed to backup ${cols[i]}`
         }
       }
+
       setBackupProgress({ current: cols.length, total: cols.length, collection: '' })
+
       if (successCount === cols.length) {
         toast('success', `Created ${successCount} backup(s)`)
       } else if (successCount > 0) {
@@ -255,8 +262,8 @@ const BackupManager = () => {
     try {
       const res = await fetch(API + 'backup.php?action=delete', {
         method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({file}),
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ file }),
       })
       const data = await res.json()
       if (data.success) {
@@ -276,19 +283,40 @@ const BackupManager = () => {
   const restoreBackup = async (file: string) => {
     setActionFile(file)
     try {
+      // Download backup data from PHP
       const res = await fetch(API + 'backup.php?action=restore', {
         method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({file}),
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ file }),
       })
       const data = await res.json()
-      if (data.success) {
-        toast('success', 'Backup restored successfully')
-      } else {
-        toast('error', data.error || 'Restore failed')
+      if (!data.success) {
+        toast('error', data.error || 'Failed to read backup')
+        return
       }
-    } catch {
-      toast('error', 'Connection failed')
+
+      const collectionName = data.collection
+      const documents: Array<Record<string, unknown>> = data.documents
+
+      // Write documents to Firestore client-side
+      let errors = 0
+      for (const doc of documents) {
+        const docId = doc.id as string
+        if (!docId) continue
+        try {
+          await setDocument(collectionName, docId, doc)
+        } catch {
+          errors++
+        }
+      }
+
+      if (errors === 0) {
+        toast('success', `Restored ${documents.length} documents to ${collectionName}`)
+      } else {
+        toast('error', `Restored with ${errors} error(s) out of ${documents.length} documents`)
+      }
+    } catch (err) {
+      toast('error', err instanceof Error ? err.message : 'Restore failed')
     } finally {
       setActionFile(null)
       setConfirm(null)
@@ -308,21 +336,29 @@ const BackupManager = () => {
   )
   const collections = [...new Set(backups.map(b => b.collection))]
   const latest = backups[0]
-  const totalDocuments = backups.reduce((sum, b) => sum + (typeof b.documents === 'number' ? b.documents : 0), 0)
-  const collectionBreakdown = Object.entries(
-    backups.reduce<Record<string, {backups: number; documents: number; latest: number}>>((acc, backup) => {
-      const next = acc[backup.collection] || {backups: 0, documents: 0, latest: 0}
-      next.backups += 1
-      if (typeof backup.documents === 'number') {
-        next.documents += backup.documents
-      }
-      next.latest = Math.max(next.latest, backup.timestamp || 0)
-      acc[backup.collection] = next
-      return acc
-    }, {})
+  const totalDocuments = backups.reduce(
+    (sum, b) => sum + (typeof b.documents === 'number' ? b.documents : 0),
+    0
   )
-    .map(([collection, data]) => ({collection, ...data}))
+  const collectionBreakdown = Object.entries(
+    backups.reduce<Record<string, { backups: number; documents: number; latest: number }>>(
+      (acc, backup) => {
+        const next = acc[backup.collection] || { backups: 0, documents: 0, latest: 0 }
+        next.backups += 1
+        if (typeof backup.documents === 'number') {
+          next.documents += backup.documents
+        }
+        next.latest = Math.max(next.latest, backup.timestamp || 0)
+        acc[backup.collection] = next
+        return acc
+      },
+      {}
+    )
+  )
+    .map(([collection, data]) => ({ collection, ...data }))
     .sort((a, b) => b.backups - a.backups || b.latest - a.latest)
+
+  const project = getActiveProject()
 
   return (
     <div className='max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 py-6'>
@@ -369,14 +405,16 @@ const BackupManager = () => {
               <p className='text-sm text-gray-600 leading-relaxed'>
                 {confirm.type === 'delete' ? (
                   <>
-                    Are you sure you want to delete <span className='font-medium text-gray-900'>{confirm.file}</span>?
-                    This action cannot be undone.
+                    Are you sure you want to delete{' '}
+                    <span className='font-medium text-gray-900'>{confirm.file}</span>? This action cannot be
+                    undone.
                   </>
                 ) : (
                   <>
-                    This will restore the <span className='font-medium text-gray-900'>{confirm.collection}</span>{' '}
-                    collection from <span className='font-medium text-gray-900'>{confirm.file}</span>. Current data in
-                    the collection will be overwritten.
+                    This will restore the{' '}
+                    <span className='font-medium text-gray-900'>{confirm.collection}</span> collection from{' '}
+                    <span className='font-medium text-gray-900'>{confirm.file}</span>. Current data in the
+                    collection will be overwritten.
                   </>
                 )}
               </p>
@@ -404,83 +442,67 @@ const BackupManager = () => {
       )}
 
       {/* Create Backup Modal */}
-      {showCreateModal && (
+      {showCreateModal && project && (
         <div className='fixed inset-0 z-40 flex items-center justify-center'>
-          <div className='fixed inset-0 bg-black/30 animate-fade-in' onClick={() => !creating && setShowCreateModal(false)} />
+          <div
+            className='fixed inset-0 bg-black/30 animate-fade-in'
+            onClick={() => !creating && setShowCreateModal(false)}
+          />
           <div className='relative bg-white rounded shadow-lg max-w-md w-full mx-4 animate-fade-in overflow-hidden'>
             <div className='h-1 bg-blue-500' />
             <div className='p-6'>
               <h3 className='text-lg font-semibold text-gray-900 mb-4'>Create Backup</h3>
 
-              {collectionsLoading ? (
-                <div className='flex items-center justify-center py-8'>
-                  <Spinner className='w-5 h-5 text-gray-400' />
-                  <span className='ml-2 text-sm text-gray-500'>Loading collections...</span>
-                </div>
-              ) : collectionsError ? (
-                <div className='mb-6'>
-                  <p className='text-sm text-gray-600 mb-1'>Could not load collections automatically.</p>
-                  <p className='text-sm text-gray-600 mb-3'>Enter collection names separated by commas:</p>
-                  <input
-                    type='text'
-                    value={manualCollections}
-                    onChange={e => setManualCollections(e.target.value)}
-                    placeholder='e.g. parts, orders, users'
-                    disabled={creating}
-                    className='w-full px-3 py-2 text-sm border border-gray-300 rounded bg-white focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent disabled:opacity-50'
-                  />
-                </div>
-              ) : (
-                <>
-                  <p className='text-sm text-gray-600 mb-4'>Select which collections to back up:</p>
+              <p className='text-sm text-gray-600 mb-4'>
+                Select collections to back up from{' '}
+                <span className='font-medium'>{project.name}</span>:
+              </p>
 
-                  <div className='mb-3'>
-                    <button
-                      onClick={() => {
-                        if (selectedCollections.size === availableCollections.length) {
-                          setSelectedCollections(new Set())
-                        } else {
-                          setSelectedCollections(new Set(availableCollections))
-                        }
-                      }}
-                      disabled={creating}
-                      className='text-xs font-medium text-blue-600 hover:text-blue-700 disabled:opacity-50'
+              <div className='mb-3'>
+                <button
+                  onClick={() => {
+                    if (selectedCollections.size === project.collections.length) {
+                      setSelectedCollections(new Set())
+                    } else {
+                      setSelectedCollections(new Set(project.collections))
+                    }
+                  }}
+                  disabled={creating}
+                  className='text-xs font-medium text-blue-600 hover:text-blue-700 disabled:opacity-50'
+                >
+                  {selectedCollections.size === project.collections.length ? 'Deselect All' : 'Select All'}
+                </button>
+              </div>
+
+              <div className='space-y-1 mb-6'>
+                {project.collections.map(col => {
+                  const checked = selectedCollections.has(col)
+                  return (
+                    <label
+                      key={col}
+                      className={`flex items-center gap-3 px-3 py-2 rounded cursor-pointer transition-colors ${
+                        checked ? 'bg-gray-50' : 'bg-white hover:bg-gray-50'
+                      } ${creating ? 'opacity-50 pointer-events-none' : ''}`}
                     >
-                      {selectedCollections.size === availableCollections.length ? 'Deselect All' : 'Select All'}
-                    </button>
-                  </div>
-
-                  <div className='space-y-1 mb-6'>
-                    {availableCollections.map(col => {
-                      const checked = selectedCollections.has(col)
-                      return (
-                        <label
-                          key={col}
-                          className={`flex items-center gap-3 px-3 py-2 rounded cursor-pointer transition-colors ${
-                            checked ? 'bg-gray-50' : 'bg-white hover:bg-gray-50'
-                          } ${creating ? 'opacity-50 pointer-events-none' : ''}`}
-                        >
-                          <input
-                            type='checkbox'
-                            checked={checked}
-                            onChange={() => {
-                              setSelectedCollections(prev => {
-                                const next = new Set(prev)
-                                if (next.has(col)) next.delete(col)
-                                else next.add(col)
-                                return next
-                              })
-                            }}
-                            disabled={creating}
-                            className='w-4 h-4 text-blue-600 rounded border-gray-300 focus:ring-blue-500'
-                          />
-                          <span className='text-sm text-gray-700'>{col}</span>
-                        </label>
-                      )
-                    })}
-                  </div>
-                </>
-              )}
+                      <input
+                        type='checkbox'
+                        checked={checked}
+                        onChange={() => {
+                          setSelectedCollections(prev => {
+                            const next = new Set(prev)
+                            if (next.has(col)) next.delete(col)
+                            else next.add(col)
+                            return next
+                          })
+                        }}
+                        disabled={creating}
+                        className='w-4 h-4 text-blue-600 rounded border-gray-300 focus:ring-blue-500'
+                      />
+                      <span className='text-sm text-gray-700'>{col}</span>
+                    </label>
+                  )
+                })}
+              </div>
 
               {/* Progress Bar */}
               {backupProgress && (
@@ -514,7 +536,7 @@ const BackupManager = () => {
                 </button>
                 <button
                   onClick={createBackup}
-                  disabled={creating || collectionsLoading || (collectionsError ? manualCollections.trim() === '' : selectedCollections.size === 0)}
+                  disabled={creating || selectedCollections.size === 0}
                   className='px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded hover:bg-blue-700 transition-colors disabled:opacity-50 flex items-center gap-2'
                 >
                   {creating && <Spinner />}
@@ -614,7 +636,12 @@ const BackupManager = () => {
             className='inline-flex items-center justify-center px-3 py-2.5 text-sm font-medium text-gray-700 bg-white border border-gray-300 rounded hover:bg-gray-50 focus:outline-none focus:ring-2 focus:ring-gray-300 disabled:opacity-50 transition-colors'
             title='Refresh'
           >
-            <svg className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} fill='none' stroke='currentColor' viewBox='0 0 24 24'>
+            <svg
+              className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`}
+              fill='none'
+              stroke='currentColor'
+              viewBox='0 0 24 24'
+            >
               <path
                 strokeLinecap='round'
                 strokeLinejoin='round'
@@ -737,7 +764,7 @@ const BackupManager = () => {
                         <div className='flex items-center justify-end gap-1.5'>
                           <button
                             onClick={() =>
-                              setConfirm({type: 'restore', file: backup.file, collection: backup.collection})
+                              setConfirm({ type: 'restore', file: backup.file, collection: backup.collection })
                             }
                             disabled={isActing}
                             className='inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-blue-700 bg-blue-50 border border-blue-200 rounded-md hover:bg-blue-100 transition-colors disabled:opacity-50'
@@ -773,7 +800,7 @@ const BackupManager = () => {
                           </a>
                           <button
                             onClick={() =>
-                              setConfirm({type: 'delete', file: backup.file, collection: backup.collection})
+                              setConfirm({ type: 'delete', file: backup.file, collection: backup.collection })
                             }
                             disabled={isActing}
                             className='inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-red-700 bg-red-50 border border-red-200 rounded-md hover:bg-red-100 transition-colors disabled:opacity-50'

@@ -1,14 +1,8 @@
 <?php
 require '../security.php';
-require '../env.php';
-require '../vendor/autoload.php';
-
-use Firebase\JWT\JWT;
-use PHPMailer\PHPMailer\PHPMailer;
 
 $backupDir = __DIR__ . "/backups/";
 $action = $_GET['action'] ?? null;
-$email = $_GET['email'] ?? null;
 $file = $_GET['file'] ?? null;
 
 if (!is_dir($backupDir)) {
@@ -23,7 +17,9 @@ switch ($action) {
         break;
     case 'create':
         $collection = $body['collection'] ?? null;
-        createBackup($backupDir, $collection);
+        $documents = $body['documents'] ?? null;
+        $project = $body['project'] ?? null;
+        createBackup($backupDir, $collection, $documents, $project);
         break;
     case 'delete':
         $file = $body['file'] ?? null;
@@ -37,183 +33,8 @@ switch ($action) {
         $fileToDownload = $file ?: ($body['file'] ?? null);
         downloadBackup($backupDir, $fileToDownload);
         break;
-    case 'collections':
-        fetchCollections();
-        break;
     default:
         echo json_encode(["error" => "Invalid action"]);
-}
-
-// --- Firestore REST API helpers ---
-
-function getAccessToken(): string
-{
-    $sa = getServiceAccount();
-    $now = time();
-    $payload = [
-        'iss' => $sa['client_email'],
-        'sub' => $sa['client_email'],
-        'aud' => 'https://oauth2.googleapis.com/token',
-        'iat' => $now,
-        'exp' => $now + 3600,
-        'scope' => 'https://www.googleapis.com/auth/datastore',
-    ];
-    $jwt = JWT::encode($payload, $sa['private_key'], 'RS256');
-
-    $ch = curl_init('https://oauth2.googleapis.com/token');
-    curl_setopt_array($ch, [
-        CURLOPT_RETURNTRANSFER => true,
-        CURLOPT_POST => true,
-        CURLOPT_POSTFIELDS => http_build_query([
-            'grant_type' => 'urn:ietf:params:oauth:grant-type:jwt-bearer',
-            'assertion' => $jwt,
-        ]),
-    ]);
-    $response = curl_exec($ch);
-    $err = curl_error($ch);
-    curl_close($ch);
-
-    if ($err) {
-        throw new \Exception('cURL error obtaining access token: ' . $err);
-    }
-
-    $data = json_decode($response, true);
-    if (!isset($data['access_token'])) {
-        throw new \Exception('Failed to obtain access token: ' . ($data['error_description'] ?? json_encode($data)));
-    }
-    return $data['access_token'];
-}
-
-function firestoreRequest(string $method, string $url, ?array $body = null): array
-{
-    static $token = null;
-    if ($token === null) {
-        $token = getAccessToken();
-    }
-
-    $ch = curl_init($url);
-    $headers = [
-        'Authorization: Bearer ' . $token,
-        'Content-Type: application/json',
-    ];
-
-    $opts = [
-        CURLOPT_RETURNTRANSFER => true,
-        CURLOPT_HTTPHEADER => $headers,
-    ];
-
-    if ($method === 'POST') {
-        $opts[CURLOPT_POST] = true;
-        $opts[CURLOPT_POSTFIELDS] = json_encode($body ?? new \stdClass());
-    } elseif ($method === 'PATCH') {
-        $opts[CURLOPT_CUSTOMREQUEST] = 'PATCH';
-        $opts[CURLOPT_POSTFIELDS] = json_encode($body ?? new \stdClass());
-    }
-
-    curl_setopt_array($ch, $opts);
-    $response = curl_exec($ch);
-    $err = curl_error($ch);
-    $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-    curl_close($ch);
-
-    if ($err) {
-        throw new \Exception('cURL error: ' . $err);
-    }
-
-    $data = json_decode($response, true);
-    if ($httpCode >= 400) {
-        $errorMsg = $data['error']['message'] ?? 'HTTP ' . $httpCode;
-        throw new \Exception("Firestore API error: $errorMsg");
-    }
-
-    return $data ?? [];
-}
-
-function firestoreBaseUrl(): string
-{
-    $sa = getServiceAccount();
-    $projectId = $sa['project_id'];
-    return "https://firestore.googleapis.com/v1/projects/{$projectId}/databases/(default)/documents";
-}
-
-function decodeFirestoreValue(array $value): mixed
-{
-    if (array_key_exists('nullValue', $value)) return null;
-    if (isset($value['stringValue'])) return $value['stringValue'];
-    if (isset($value['integerValue'])) return (int)$value['integerValue'];
-    if (isset($value['doubleValue'])) return (float)$value['doubleValue'];
-    if (isset($value['booleanValue'])) return $value['booleanValue'];
-    if (isset($value['timestampValue'])) return $value['timestampValue'];
-    if (isset($value['geoPointValue'])) return $value['geoPointValue'];
-    if (isset($value['referenceValue'])) return $value['referenceValue'];
-    if (isset($value['bytesValue'])) return $value['bytesValue'];
-    if (isset($value['mapValue'])) {
-        $result = [];
-        foreach (($value['mapValue']['fields'] ?? []) as $k => $v) {
-            $result[$k] = decodeFirestoreValue($v);
-        }
-        return $result;
-    }
-    if (isset($value['arrayValue'])) {
-        $result = [];
-        foreach (($value['arrayValue']['values'] ?? []) as $v) {
-            $result[] = decodeFirestoreValue($v);
-        }
-        return $result;
-    }
-    return null;
-}
-
-function encodeFirestoreValue(mixed $value): array
-{
-    if (is_null($value)) return ['nullValue' => null];
-    if (is_bool($value)) return ['booleanValue' => $value];
-    if (is_int($value)) return ['integerValue' => (string)$value];
-    if (is_float($value)) return ['doubleValue' => $value];
-    if (is_string($value)) return ['stringValue' => $value];
-    if (is_array($value)) {
-        if (empty($value)) return ['mapValue' => ['fields' => new \stdClass()]];
-        if (array_is_list($value)) {
-            return ['arrayValue' => ['values' => array_map('encodeFirestoreValue', $value)]];
-        }
-        $fields = [];
-        foreach ($value as $k => $v) {
-            $fields[$k] = encodeFirestoreValue($v);
-        }
-        return ['mapValue' => ['fields' => $fields]];
-    }
-    return ['nullValue' => null];
-}
-
-function decodeDocument(array $doc): array
-{
-    $nameParts = explode('/', $doc['name']);
-    $data = ['id' => end($nameParts)];
-    foreach (($doc['fields'] ?? []) as $key => $value) {
-        $data[$key] = decodeFirestoreValue($value);
-    }
-    return $data;
-}
-
-function listAllDocuments(string $collectionId): array
-{
-    $baseUrl = firestoreBaseUrl();
-    $documents = [];
-    $pageToken = null;
-
-    do {
-        $url = "{$baseUrl}/{$collectionId}?pageSize=300";
-        if ($pageToken) {
-            $url .= '&pageToken=' . urlencode($pageToken);
-        }
-        $result = firestoreRequest('GET', $url);
-        foreach (($result['documents'] ?? []) as $doc) {
-            $documents[] = decodeDocument($doc);
-        }
-        $pageToken = $result['nextPageToken'] ?? null;
-    } while ($pageToken);
-
-    return $documents;
 }
 
 // --- Actions ---
@@ -243,13 +64,15 @@ function enrichBackupMetadata(string $filePath): array
                 }
                 $jsonData .= $chunk;
                 if (strlen($jsonData) > 5_000_000) {
-                    // Avoid holding extremely large files fully in memory.
                     break;
                 }
             }
             gzclose($gz);
             $decoded = json_decode($jsonData, true);
-            if (is_array($decoded)) {
+            if (is_array($decoded) && isset($decoded['documents']) && is_array($decoded['documents'])) {
+                $documentCount = count($decoded['documents']);
+            } elseif (is_array($decoded) && !isset($decoded['documents'])) {
+                // Legacy format: top-level array of documents
                 $documentCount = count($decoded);
             }
         }
@@ -266,63 +89,38 @@ function enrichBackupMetadata(string $filePath): array
     ];
 }
 
-function fetchCollections(): void
+function createBackup($backupDir, $collection, $documents, $project): void
 {
+    if (!$collection || !is_array($documents)) {
+        onError("Missing collection name or documents data");
+        return;
+    }
+
     try {
-        $baseUrl = firestoreBaseUrl();
-        $result = firestoreRequest('POST', "{$baseUrl}:listCollectionIds", []);
-        $names = $result['collectionIds'] ?? [];
-        echo json_encode(["success" => true, "data" => $names]);
+        $backupData = [
+            'collection' => $collection,
+            'documents' => $documents,
+            'createdAt' => date('c'),
+        ];
+
+        if ($project) {
+            $backupData['project'] = $project;
+        }
+
+        $jsonData = json_encode($backupData, JSON_PRETTY_PRINT);
+        $backupFile = $backupDir . $collection . "_" . date('Y-m-d_H-i-s') . ".json.gz";
+
+        $gzFile = gzopen($backupFile, 'w9');
+        gzwrite($gzFile, $jsonData);
+        gzclose($gzFile);
+
+        echo json_encode([
+            "success" => true,
+            "data" => ["collection" => $collection, "file" => basename($backupFile)],
+        ]);
     } catch (\Exception $e) {
-        echo json_encode(["success" => false, "error" => "Unable to list collections: " . $e->getMessage()]);
+        onError("Failed to create backup: " . $e->getMessage());
     }
-}
-
-function createBackup($backupDir, $singleCollection = null): void
-{
-    global $email;
-
-    if ($singleCollection) {
-        $collections = [$singleCollection];
-    } else {
-        try {
-            $baseUrl = firestoreBaseUrl();
-            $result = firestoreRequest('POST', "{$baseUrl}:listCollectionIds", []);
-            $collections = $result['collectionIds'] ?? [];
-        } catch (\Exception $e) {
-            echo json_encode(["success" => false, "data" => [], "error" => "Failed to list collections: " . $e->getMessage()]);
-            return;
-        }
-    }
-
-    $response = [];
-    $errors = [];
-    $success = true;
-
-    foreach ($collections as $collection) {
-        try {
-            $data = listAllDocuments($collection);
-
-            $jsonData = json_encode($data, JSON_PRETTY_PRINT);
-            $backupFile = $backupDir . $collection . "_" . date('Y-m-d_H-i-s') . ".json.gz";
-
-            $gzFile = gzopen($backupFile, 'w9');
-            gzwrite($gzFile, $jsonData);
-            gzclose($gzFile);
-
-            $response[] = ["collection" => $collection, "file" => basename($backupFile)];
-        } catch (\Exception $e) {
-            $errorMsg = "ERROR: Failed to backup $collection - " . $e->getMessage() . "\n";
-            $response[] = ["collection" => $collection, "error" => $errorMsg];
-            $errors[] = $errorMsg;
-            $success = false;
-        }
-    }
-
-    if ($success === false && $email) {
-        sendFailureEmail(implode("\n", $errors));
-    }
-    echo json_encode(["success" => $success, "data" => $response]);
 }
 
 function deleteBackup($backupDir, $file): void
@@ -377,63 +175,27 @@ function restoreBackup($backupDir, $file): void
         return;
     }
 
+    // New format: { collection, documents, project, createdAt }
+    if (isset($data['documents']) && is_array($data['documents'])) {
+        echo json_encode([
+            "success" => true,
+            "collection" => $data['collection'] ?? explode('_', $file)[0],
+            "documents" => $data['documents'],
+            "project" => $data['project'] ?? null,
+        ]);
+        return;
+    }
+
+    // Legacy format: top-level array of documents
     $collectionName = explode('_', $file)[0];
-    $baseUrl = firestoreBaseUrl();
-    $errors = [];
-
-    foreach ($data as $doc) {
-        try {
-            $docId = $doc['id'] ?? null;
-            if (!$docId) continue;
-
-            $fields = [];
-            foreach ($doc as $key => $value) {
-                $fields[$key] = encodeFirestoreValue($value);
-            }
-
-            $url = "{$baseUrl}/{$collectionName}/{$docId}";
-            firestoreRequest('PATCH', $url, ['fields' => $fields]);
-        } catch (\Exception $e) {
-            $errors[] = "Failed to restore document {$docId}: " . $e->getMessage();
-        }
-    }
-
-    if (empty($errors)) {
-        echo json_encode(["success" => true, "message" => "Backup restored"]);
-    } else {
-        onError("Partial restore failure: " . implode('; ', $errors));
-    }
-}
-
-function sendFailureEmail($errorMessage): void
-{
-    $mail = new PHPMailer(true);
-
-    try {
-        $mail->isSMTP();
-        $mail->Host = 'smtp.example.com';
-        $mail->SMTPAuth = true;
-        $mail->Username = 'your-smtp-username';
-        $mail->Password = 'your-smtp-password';
-        $mail->SMTPSecure = PHPMailer::ENCRYPTION_STARTTLS;
-        $mail->Port = 587;
-
-        $mail->setFrom('your-email@example.com', 'Backup System');
-        $mail->addAddress('notify-email@example.com');
-        $mail->Subject = 'Backup Failure Alert';
-        $mail->Body = "Backup Failed! Error details:\n\n" . $errorMessage;
-
-        $mail->send();
-    } catch (\Exception $e) {
-        error_log("Email notification failed: " . $mail->ErrorInfo);
-    }
+    echo json_encode([
+        "success" => true,
+        "collection" => $collectionName,
+        "documents" => $data,
+    ]);
 }
 
 function onError($errorMessage): void
 {
-    global $email;
-    echo json_encode(["error" => $errorMessage]);
-    if ($email) {
-        sendFailureEmail($errorMessage);
-    }
+    echo json_encode(["success" => false, "error" => $errorMessage]);
 }
