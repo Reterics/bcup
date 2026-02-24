@@ -61,17 +61,38 @@ function resolveProjectDir(string $baseDir, ?string $projectName): ?string
 
 function listBackups(string $projectDir): void
 {
-    $files = glob($projectDir . "*.json.gz");
+    $files = glob($projectDir . "*.json.gz") ?: [];
     $backups = array_map(fn($file) => enrichBackupMetadata($file), $files);
 
     echo json_encode(["success" => true, "data" => $backups]);
 }
 
+function metaFilePath(string $gzPath): string
+{
+    return preg_replace('/\.json\.gz$/', '.meta.json', $gzPath);
+}
+
 function enrichBackupMetadata(string $filePath): array
 {
     $fileName = basename($filePath);
+    $metaFile = metaFilePath($filePath);
 
-    $documentCount = null;
+    // Fast path: sidecar meta file written at backup creation time
+    if (file_exists($metaFile)) {
+        $meta = json_decode(file_get_contents($metaFile), true);
+        if ($meta) {
+            return [
+                "file"        => $fileName,
+                "timestamp"   => filemtime($filePath),
+                "collections" => $meta['collections'] ?? [],
+                "documents"   => $meta['documents'] ?? null,
+                "size"        => filesize($filePath),
+            ];
+        }
+    }
+
+    // Fallback: read full gzip for backups that predate sidecar files
+    $documentCount   = null;
     $collectionNames = [];
 
     try {
@@ -79,35 +100,33 @@ function enrichBackupMetadata(string $filePath): array
         if ($gz !== false) {
             $jsonData = '';
             while (!gzeof($gz)) {
-                $chunk = gzread($gz, 8192);
-                if ($chunk === false) {
-                    break;
-                }
+                $chunk = gzread($gz, 65536);
+                if ($chunk === false) break;
                 $jsonData .= $chunk;
-                if (strlen($jsonData) > 5_000_000) {
-                    break;
-                }
             }
             gzclose($gz);
             $decoded = json_decode($jsonData, true);
             if (is_array($decoded)) {
                 if (isset($decoded['collections']) && is_array($decoded['collections'])) {
-                    // New unified format
                     $collectionNames = array_keys($decoded['collections']);
-                    $documentCount = 0;
+                    $documentCount   = 0;
                     foreach ($decoded['collections'] as $docs) {
-                        if (is_array($docs)) {
-                            $documentCount += count($docs);
-                        }
+                        if (is_array($docs)) $documentCount += count($docs);
                     }
                 } elseif (isset($decoded['documents']) && is_array($decoded['documents'])) {
-                    // Old single-collection format
                     $collectionNames = [$decoded['collection'] ?? explode('_', $fileName)[0]];
-                    $documentCount = count($decoded['documents']);
-                } elseif (!isset($decoded['documents']) && !isset($decoded['collections'])) {
-                    // Legacy format: top-level array of documents
+                    $documentCount   = count($decoded['documents']);
+                } else {
                     $collectionNames = [explode('_', $fileName)[0]];
-                    $documentCount = count($decoded);
+                    $documentCount   = count($decoded);
+                }
+
+                // Write sidecar so future listings use the fast path
+                if ($documentCount !== null) {
+                    file_put_contents($metaFile, json_encode([
+                        'collections' => $collectionNames,
+                        'documents'   => $documentCount,
+                    ]));
                 }
             }
         }
@@ -116,11 +135,11 @@ function enrichBackupMetadata(string $filePath): array
     }
 
     return [
-        "file" => $fileName,
-        "timestamp" => filemtime($filePath),
+        "file"        => $fileName,
+        "timestamp"   => filemtime($filePath),
         "collections" => $collectionNames,
-        "documents" => $documentCount,
-        "size" => filesize($filePath),
+        "documents"   => $documentCount,
+        "size"        => filesize($filePath),
     ];
 }
 
@@ -148,6 +167,19 @@ function createBackup(string $projectDir, $collections, $project): void
         gzwrite($gzFile, $jsonData);
         gzclose($gzFile);
 
+        $documentCount = 0;
+        foreach ($collections as $docs) {
+            if (is_array($docs)) $documentCount += count($docs);
+        }
+        file_put_contents(
+            metaFilePath($backupFile),
+            json_encode([
+                'collections' => array_keys($collections),
+                'documents'   => $documentCount,
+                'createdAt'   => date('c'),
+            ])
+        );
+
         echo json_encode([
             "success" => true,
             "data" => [
@@ -165,6 +197,8 @@ function deleteBackup(string $projectDir, $file): void
     $file = $file ? basename($file) : null;
     if ($file && file_exists($projectDir . $file)) {
         unlink($projectDir . $file);
+        $metaFile = metaFilePath($projectDir . $file);
+        if (file_exists($metaFile)) unlink($metaFile);
         echo json_encode(["success" => true, "message" => "Backup deleted"]);
     } else {
         onError("File not found");
@@ -208,7 +242,9 @@ function restoreBackup(string $projectDir, $file): void
     }
     $jsonData = '';
     while (!gzeof($gzFile)) {
-        $jsonData .= gzread($gzFile, 4096);
+        $chunk = gzread($gzFile, 65536);
+        if ($chunk === false) break;
+        $jsonData .= $chunk;
     }
     gzclose($gzFile);
 
