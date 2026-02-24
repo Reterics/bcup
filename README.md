@@ -118,21 +118,6 @@ To run a backup manually, execute:
 php backup.php
 ```
 
-### 🔄 **Restore Latest Backup**
-To restore data from the most recent backup:
-
-```sh
-php restore.php
-```
-
----
-
-## 📜 Logs
-✅ **Backup logs:** `backup.log`  
-✅ **Restore logs:** `restore.log`
-
-Check logs for details on recent operations.
-
 ---
 
 ## 🚀 How It Works

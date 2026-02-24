@@ -13,34 +13,55 @@ $body = json_decode(file_get_contents('php://input'), true);
 
 switch ($action) {
     case 'list':
-        listBackups($backupDir);
+        $projectDir = resolveProjectDir($backupDir, $_GET['project'] ?? null);
+        if (!$projectDir) { onError("No project specified"); break; }
+        listBackups($projectDir);
         break;
     case 'create':
         $collections = $body['collections'] ?? null;
         $project = $body['project'] ?? null;
-        createBackup($backupDir, $collections, $project);
+        $projectDir = resolveProjectDir($backupDir, $project['firebaseConfig']['projectId'] ?? null);
+        if (!$projectDir) { onError("No project specified"); break; }
+        createBackup($projectDir, $collections, $project);
         break;
     case 'delete':
         $file = $body['file'] ?? null;
-        deleteBackup($backupDir, $file);
+        $projectDir = resolveProjectDir($backupDir, $body['project'] ?? null);
+        if (!$projectDir) { onError("No project specified"); break; }
+        deleteBackup($projectDir, $file);
         break;
     case 'restore':
         $restoreFile = $body['file'] ?? null;
-        restoreBackup($backupDir, $restoreFile);
+        $projectDir = resolveProjectDir($backupDir, $body['project'] ?? null);
+        if (!$projectDir) { onError("No project specified"); break; }
+        restoreBackup($projectDir, $restoreFile);
         break;
     case 'download':
         $fileToDownload = $file ?: ($body['file'] ?? null);
-        downloadBackup($backupDir, $fileToDownload);
+        $projectDir = resolveProjectDir($backupDir, $_GET['project'] ?? null);
+        if (!$projectDir) { onError("No project specified"); break; }
+        downloadBackup($projectDir, $fileToDownload);
         break;
     default:
         echo json_encode(["error" => "Invalid action"]);
 }
 
+// --- Helpers ---
+
+function resolveProjectDir(string $baseDir, ?string $projectName): ?string
+{
+    if (!$projectName || trim($projectName) === '') return null;
+    $safe = preg_replace('/[^a-zA-Z0-9_\-]/', '_', trim($projectName));
+    $dir = $baseDir . $safe . '/';
+    if (!is_dir($dir)) mkdir($dir, 0755, true);
+    return $dir;
+}
+
 // --- Actions ---
 
-function listBackups($backupDir): void
+function listBackups(string $projectDir): void
 {
-    $files = glob($backupDir . "*.json.gz");
+    $files = glob($projectDir . "*.json.gz");
     $backups = array_map(fn($file) => enrichBackupMetadata($file), $files);
 
     echo json_encode(["success" => true, "data" => $backups]);
@@ -103,7 +124,7 @@ function enrichBackupMetadata(string $filePath): array
     ];
 }
 
-function createBackup($backupDir, $collections, $project): void
+function createBackup(string $projectDir, $collections, $project): void
 {
     if (!is_array($collections) || empty($collections)) {
         onError("Missing collections data");
@@ -121,7 +142,7 @@ function createBackup($backupDir, $collections, $project): void
         }
 
         $jsonData = json_encode($backupData, JSON_PRETTY_PRINT);
-        $backupFile = $backupDir . "backup_" . date('Y-m-d_H-i-s') . ".json.gz";
+        $backupFile = $projectDir . "backup_" . date('Y-m-d_H-i-s') . ".json.gz";
 
         $gzFile = gzopen($backupFile, 'w9');
         gzwrite($gzFile, $jsonData);
@@ -139,18 +160,18 @@ function createBackup($backupDir, $collections, $project): void
     }
 }
 
-function deleteBackup($backupDir, $file): void
+function deleteBackup(string $projectDir, $file): void
 {
     $file = $file ? basename($file) : null;
-    if ($file && file_exists($backupDir . $file)) {
-        unlink($backupDir . $file);
+    if ($file && file_exists($projectDir . $file)) {
+        unlink($projectDir . $file);
         echo json_encode(["success" => true, "message" => "Backup deleted"]);
     } else {
         onError("File not found");
     }
 }
 
-function downloadBackup($backupDir, $file): void
+function downloadBackup(string $projectDir, $file): void
 {
     if (!$file) {
         onError("File not specified");
@@ -158,7 +179,7 @@ function downloadBackup($backupDir, $file): void
     }
 
     $safeFile = basename($file);
-    $fullPath = $backupDir . $safeFile;
+    $fullPath = $projectDir . $safeFile;
 
     if (!file_exists($fullPath)) {
         onError("File not found");
@@ -172,15 +193,19 @@ function downloadBackup($backupDir, $file): void
     exit;
 }
 
-function restoreBackup($backupDir, $file): void
+function restoreBackup(string $projectDir, $file): void
 {
     $file = $file ? basename($file) : null;
-    if (!$file || !file_exists($backupDir . $file)) {
+    if (!$file || !file_exists($projectDir . $file)) {
         onError("Backup file not found");
         return;
     }
 
-    $gzFile = gzopen($backupDir . $file, 'r');
+    $gzFile = gzopen($projectDir . $file, 'r');
+    if ($gzFile === false) {
+        onError("Failed to open backup file");
+        return;
+    }
     $jsonData = '';
     while (!gzeof($gzFile)) {
         $jsonData .= gzread($gzFile, 4096);

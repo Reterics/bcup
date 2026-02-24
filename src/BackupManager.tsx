@@ -129,6 +129,23 @@ function EmptyState({ hasFilter, onClearFilter }: { hasFilter: boolean; onClearF
   )
 }
 
+function NoProjectState() {
+  return (
+    <div className='py-16 px-6 text-center'>
+      <svg className='w-12 h-12 mx-auto text-gray-300' fill='none' stroke='currentColor' viewBox='0 0 24 24'>
+        <path
+          strokeLinecap='round'
+          strokeLinejoin='round'
+          strokeWidth={1.5}
+          d='M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z'
+        />
+      </svg>
+      <p className='mt-4 text-sm font-medium text-gray-900'>No active project</p>
+      <p className='mt-1 text-sm text-gray-500'>Configure one in Project Settings to view its backups.</p>
+    </div>
+  )
+}
+
 const BackupManager = () => {
   const [backups, setBackups] = useState<BackupElement[]>([])
   const [loading, setLoading] = useState(true)
@@ -156,7 +173,9 @@ const BackupManager = () => {
   const fetchBackups = useCallback(async () => {
     try {
       setError(null)
-      const res = await fetch(API + 'backup.php?action=list')
+      const project = getActiveProject()
+      if (!project) { setBackups([]); setLoading(false); return }
+      const res = await fetch(`${API}backup.php?action=list&project=${encodeURIComponent(project.firebaseConfig.projectId)}`)
       const data = await res.json()
       if (data.success) {
         setBackups(
@@ -264,7 +283,7 @@ const BackupManager = () => {
       const res = await fetch(API + 'backup.php?action=delete', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ file }),
+        body: JSON.stringify({ file, project: getActiveProject()?.firebaseConfig.projectId }),
       })
       const data = await res.json()
       if (data.success) {
@@ -282,12 +301,18 @@ const BackupManager = () => {
   }
 
   const restoreBackup = async (file: string) => {
+    const project = getActiveProject()
+    if (!project) {
+      toast('error', 'No active project. Configure one in Project Settings.')
+      setConfirm(null)
+      return
+    }
     setActionFile(file)
     try {
       const res = await fetch(API + 'backup.php?action=restore', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ file }),
+        body: JSON.stringify({ file, project: project.firebaseConfig.projectId }),
       })
       const data = await res.json()
       if (!data.success) {
@@ -647,6 +672,8 @@ const BackupManager = () => {
       <div className='bg-white border border-gray-200 rounded shadow-sm overflow-hidden'>
         {loading ? (
           <LoadingSkeleton />
+        ) : !project ? (
+          <NoProjectState />
         ) : filtered.length === 0 ? (
           <EmptyState hasFilter={!!filter} onClearFilter={() => setFilter('')} />
         ) : (
@@ -744,7 +771,7 @@ const BackupManager = () => {
                             <span className='hidden sm:inline'>Restore</span>
                           </button>
                           <a
-                            href={`${API}backup.php?action=download&file=${encodeURIComponent(backup.file)}`}
+                            href={`${API}backup.php?action=download&file=${encodeURIComponent(backup.file)}&project=${encodeURIComponent(project?.firebaseConfig.projectId ?? '')}`}
                             target='_blank'
                             rel='noreferrer'
                             className='inline-flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-gray-700 bg-white border border-gray-200 rounded-md hover:bg-gray-50 transition-colors'
