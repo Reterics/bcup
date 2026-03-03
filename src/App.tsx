@@ -2,18 +2,16 @@ import { useState, useEffect, useCallback } from 'react'
 import Header from './components/Header.tsx'
 import BackupManager from './BackupManager.tsx'
 import ProjectSettings from './components/ProjectSettings.tsx'
-import { getActiveProject } from './lib/projects'
+import { getActiveProject, ProjectConfig } from './lib/projects'
 import { initFirebase, FirebaseConfig } from './lib/firebase'
 
 const App = () => {
   const [showSettings, setShowSettings] = useState(false)
-  const [hasProject, setHasProject] = useState(false)
-  const [projectName, setProjectName] = useState<string | null>(null)
+  const [activeProject, setActiveProject] = useState<ProjectConfig | null>(null)
 
   const refreshProject = useCallback(() => {
     const project = getActiveProject()
-    setHasProject(!!project)
-    setProjectName(project?.name ?? null)
+    setActiveProject(project)
     if (project) {
       initFirebase(project.firebaseConfig as FirebaseConfig)
     }
@@ -25,10 +23,10 @@ const App = () => {
 
   return (
     <div className='min-h-screen bg-gray-50'>
-      <Header onSettingsClick={() => setShowSettings(true)} projectName={projectName} />
+      <Header onSettingsClick={() => setShowSettings(true)} projectName={activeProject?.name ?? null} />
       <main>
-        {hasProject ? (
-          <BackupManager />
+        {activeProject ? (
+          <BackupManager project={activeProject} />
         ) : (
           <div className='max-w-6xl mx-auto px-4 sm:px-6 lg:px-8 py-16 text-center'>
             <svg className='w-16 h-16 mx-auto text-gray-300' fill='none' stroke='currentColor' viewBox='0 0 24 24'>
